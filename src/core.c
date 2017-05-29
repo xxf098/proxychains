@@ -27,6 +27,7 @@
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <poll.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -34,6 +35,8 @@
 #include <sys/time.h>
 #include <stdarg.h>
 #include <assert.h>
+
+#include <ancillary.h>
 
 #include "core.h"
 #include "common.h"
@@ -146,6 +149,57 @@ static int read_n_bytes(int fd, char *buff, size_t size) {
 	return (int) size;
 }
 
+//shadowsocks-libev
+static int
+protect_socket(int fd)
+{
+    int sock;
+    struct sockaddr_un addr;
+
+    if ((sock = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+        proxychains_write_log(LOG_PREFIX "[EROOR][android] socket() failed: %s (socket fd = %d)\n", strerror(errno), sock);
+        return -1;
+    }
+
+    // Set timeout to 1s
+    struct timeval tv;
+    tv.tv_sec  = 1;
+    tv.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv, sizeof(struct timeval));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&tv, sizeof(struct timeval));
+
+    char path[257];
+    sprintf(path, "%s/protect_path", getenv("PROXYCHAINS_PROTECT_FD_PREFIX"));
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+        proxychains_write_log(LOG_PREFIX "[EROOR][android] connect() failed: %s (socket fd = %d), path: %s\n",
+             strerror(errno), sock, path);
+        close(sock);
+        return -1;
+    }
+
+    if (ancil_send_fd(sock, fd)) {
+        perror("[android] ancil_send_fd");
+        close(sock);
+        return -1;
+    }
+
+    char ret = 0;
+
+    if (recv(sock, &ret, 1, 0) == -1) {
+        perror("[android] recv");
+        close(sock);
+        return -1;
+    }
+
+    close(sock);
+    return ret;
+}
+
 static int timed_connect(int sock, const struct sockaddr *addr, socklen_t len) {
 	int ret, value;
 	socklen_t value_len;
@@ -155,9 +209,16 @@ static int timed_connect(int sock, const struct sockaddr *addr, socklen_t len) {
 	pfd[0].fd = sock;
 	pfd[0].events = POLLOUT;
 	fcntl(sock, F_SETFL, O_NONBLOCK);
+
+	#ifdef ANDROID
+	if (getenv("PROXYCHAINS_PROTECT_FD_PREFIX")) {
+			protect_socket(pfd[0].fd);
+	}
+	#endif
+
 	ret = true_connect(sock, addr, len);
 	PDEBUG("\nconnect ret=%d\n", ret);
-	
+
 	if(ret == -1 && errno == EINPROGRESS) {
 		ret = poll_retry(pfd, 1, tcp_connect_time_out);
 		PDEBUG("\npoll ret=%d\n", ret);
@@ -203,7 +264,7 @@ static int tunnel_to(int sock, ip_type ip, unsigned short port, proxy_type pt, c
 		if(!dns_len) goto err;
 		else dns_name = hostnamebuf;
 	}
-	
+
 	PDEBUG("host dns %s\n", dns_name ? dns_name : "<NULL>");
 
 	size_t ulen = strlen(user);
@@ -218,7 +279,7 @@ static int tunnel_to(int sock, ip_type ip, unsigned short port, proxy_type pt, c
 	unsigned char buff[BUFF_SIZE];
 	char ip_buf[INET6_ADDRSTRLEN];
 	int v6 = ip.is_v6;
-	
+
 	switch (pt) {
 		case HTTP_TYPE:{
 			if(!dns_len) {
@@ -426,7 +487,7 @@ static int start_chain(int *fd, proxy_data * pd, char *begin_mark) {
 	*fd = socket(v6?PF_INET6:PF_INET, SOCK_STREAM, 0);
 	if(*fd == -1)
 		goto error;
-	
+
 	char ip_buf[INET6_ADDRSTRLEN];
 	if(!inet_ntop(v6?AF_INET6:AF_INET,pd->ip.addr.v6,ip_buf,sizeof ip_buf))
 		goto error;
@@ -713,7 +774,7 @@ int connect_proxy_chain(int sock, ip_type target_ip,
 	proxychains_write_log("\n!!!need more proxies!!!\n");
 	error_strict:
 	PDEBUG("error\n");
-	
+
 	release_all(pd, proxy_count);
 	if(ns != -1)
 		close(ns);
@@ -763,16 +824,16 @@ struct hostent *proxy_gethostbyname(const char *name, struct gethostbyname_data*
 		data->resolved_addr = hdb_res.as_int;
 		goto retname;
 	}
-	
+
 	data->resolved_addr = at_get_ip_for_host((char*) name, strlen(name)).as_int;
 	if(data->resolved_addr == (in_addr_t) ip_type_invalid.addr.v4.as_int) return NULL;
 
 	retname:
 
 	gethostbyname_data_setstring(data, (char*) name);
-	
+
 	PDEBUG("return hostent space\n");
-	
+
 	return &data->hostent_space;
 }
 
@@ -787,13 +848,13 @@ void proxy_freeaddrinfo(struct addrinfo *res) {
 	free(res);
 }
 
-#if defined(IS_MAC) || defined(IS_OPENBSD)
+#if defined(IS_MAC) || defined(IS_OPENBSD) || defined(ANDROID)
 #ifdef IS_OPENBSD /* OpenBSD has its own incompatible getservbyname_r */
 #define getservbyname_r mygetservbyname_r
 #endif
-/* getservbyname on mac is using thread local storage, so we dont need mutex 
+/* getservbyname on mac is using thread local storage, so we dont need mutex
    TODO: check if the same applies to OpenBSD */
-static int getservbyname_r(const char* name, const char* proto, struct servent* result_buf, 
+static int getservbyname_r(const char* name, const char* proto, struct servent* result_buf,
 			   char* buf, size_t buflen, struct servent** result) {
 	PFUNC();
 	struct servent *res;

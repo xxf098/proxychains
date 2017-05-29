@@ -77,6 +77,7 @@ static inline void get_chain_data(proxy_data * pd, unsigned int *proxy_count, ch
 static void* load_sym(char* symname, void* proxyfunc) {
 
 	void *funcptr = dlsym(RTLD_NEXT, symname);
+	printf("loaded symbol '%s'" " real addr %p  wrapped addr %p\n", symname, funcptr, proxyfunc);
 
 	if(!funcptr) {
 		fprintf(stderr, "Cannot load symbol '%s' %s\n", symname, dlerror());
@@ -106,7 +107,9 @@ static void setup_hooks(void) {
 	SETUP_SYM(getaddrinfo);
 	SETUP_SYM(freeaddrinfo);
 	SETUP_SYM(gethostbyaddr);
+	#ifndef ANDROID
 	SETUP_SYM(getnameinfo);
+	#endif
 	SETUP_SYM(close);
 }
 
@@ -139,10 +142,10 @@ static void init_lib_wrapper(const char* caller) {
 	pthread_once(&init_once, do_init);
 }
 
-/* if we use gcc >= 3, we can instruct the dynamic loader 
+/* if we use gcc >= 3, we can instruct the dynamic loader
  * to call init_lib at link time. otherwise it gets loaded
  * lazily, which has the disadvantage that there's a potential
- * race condition if 2 threads call it before init_l is set 
+ * race condition if 2 threads call it before init_l is set
  * and PTHREAD support was disabled */
 #if __GNUC__ > 2
 __attribute__((constructor))
@@ -332,7 +335,7 @@ static int is_v4inv6(const struct in6_addr *a) {
 	return a->s6_addr32[0] == 0 && a->s6_addr32[1] == 0 &&
 	       a->s6_addr16[4] == 0 && a->s6_addr16[5] == 0xffff;
 }
-int connect(int sock, const struct sockaddr *addr, unsigned int len) {
+int connect(int sock, const struct sockaddr *addr, socklen_t len) {
 	INIT();
 	PFUNC();
 
@@ -477,7 +480,11 @@ int pc_getnameinfo(const struct sockaddr *sa, socklen_t salen,
 	return 0;
 }
 
+#ifdef ANDROID
+struct hostent *gethostbyaddr(const char *addr, int len, int type) {
+#else
 struct hostent *gethostbyaddr(const void *addr, socklen_t len, int type) {
+#endif
 	INIT();
 	PDEBUG("TODO: proper gethostbyaddr hook\n");
 
