@@ -77,8 +77,7 @@ static inline void get_chain_data(proxy_data * pd, unsigned int *proxy_count, ch
 static void* load_sym(char* symname, void* proxyfunc) {
 
 	void *funcptr = dlsym(RTLD_NEXT, symname);
-	printf("loaded symbol '%s'" " real addr %p  wrapped addr %p\n", symname, funcptr, proxyfunc);
-
+	
 	if(!funcptr) {
 		fprintf(stderr, "Cannot load symbol '%s' %s\n", symname, dlerror());
 		exit(1);

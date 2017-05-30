@@ -36,7 +36,9 @@
 #include <stdarg.h>
 #include <assert.h>
 
+#ifdef ANDROID
 #include <ancillary.h>
+#endif
 
 #include "core.h"
 #include "common.h"
@@ -149,6 +151,7 @@ static int read_n_bytes(int fd, char *buff, size_t size) {
 	return (int) size;
 }
 
+#ifdef ANDROID
 //shadowsocks-libev
 static int
 protect_socket(int fd)
@@ -199,6 +202,7 @@ protect_socket(int fd)
     close(sock);
     return ret;
 }
+#endif
 
 static int timed_connect(int sock, const struct sockaddr *addr, socklen_t len) {
 	int ret, value;
