@@ -480,7 +480,7 @@ int pc_getnameinfo(const struct sockaddr *sa, socklen_t salen,
 }
 
 #ifdef ANDROID
-struct hostent *gethostbyaddr(const char *addr, int len, int type) {
+struct hostent *gethostbyaddr(const void *addr, socklen_t len, int type) {
 #else
 struct hostent *gethostbyaddr(const void *addr, socklen_t len, int type) {
 #endif
